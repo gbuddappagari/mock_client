@@ -19,6 +19,8 @@
 #define Info(...)       cimplog_info(LOGGING_MODULE, __VA_ARGS__)
 #define Print(...)      cimplog_debug(LOGGING_MODULE, __VA_ARGS__)
 
+#define MAX_WEBPA_THREADS 3
+
 libpd_instance_t iot_instance;
 
 const char *rdk_logger_module_fetch(void)
@@ -305,92 +307,101 @@ static void connect_parodus()
     }
 }
 
-void *parodus_receive_wait()
+void parodus_receive(long id)
 {
     int rtn;
     wrp_msg_t *wrp_msg;
     wrp_msg_t *res_wrp_msg ;
     char *contentType = NULL;
 
-    while (1) 
+    rtn = libparodus_receive (iot_instance, &wrp_msg, 2000);
+    if (rtn == 1)
     {
-        rtn = libparodus_receive (iot_instance, &wrp_msg, 2000);
-        if (rtn == 1) 
-        {
-            continue;
-        }
-
-        if (rtn != 0)
-        {
-            Error ("Libparodus failed to recieve message: '%s'\n",libparodus_strerror(rtn));
-            sleep(5);
-            continue;
-        }
-
-        if (wrp_msg->msg_type == WRP_MSG_TYPE__REQ)
-        {
-            res_wrp_msg = (wrp_msg_t *)malloc(sizeof(wrp_msg_t));
-            memset(res_wrp_msg, 0, sizeof(wrp_msg_t));
-
-            Info("Request message : %s\n",(char *)wrp_msg->u.req.payload);
-            processRequest((char *)wrp_msg->u.req.payload, ((char **)(&(res_wrp_msg->u.req.payload))));
-
-            Info("Response payload is %s\n",(char *)(res_wrp_msg->u.req.payload));
-            res_wrp_msg->u.req.payload_size = strlen(res_wrp_msg->u.req.payload);
-            res_wrp_msg->msg_type = wrp_msg->msg_type;
-            res_wrp_msg->u.req.source = wrp_msg->u.req.dest;
-            res_wrp_msg->u.req.dest = wrp_msg->u.req.source;
-            res_wrp_msg->u.req.transaction_uuid = wrp_msg->u.req.transaction_uuid;
-            contentType = (char *)malloc(sizeof(char)*(strlen(CONTENT_TYPE_JSON)+1));
-            strncpy(contentType,CONTENT_TYPE_JSON,strlen(CONTENT_TYPE_JSON)+1);
-            res_wrp_msg->u.req.content_type = contentType;
-
-            int sendStatus = libparodus_send(iot_instance, res_wrp_msg);     
-            Print("sendStatus is %d\n",sendStatus);
-            if(sendStatus == 0)
-            {
-                Info("Sent message successfully to parodus\n");
-            }
-            else
-            {
-                Error("Failed to send message: '%s'\n",libparodus_strerror(sendStatus));
-            }
-            wrp_free_struct (res_wrp_msg); 
-        }
-        free(wrp_msg);
+        return;
     }
 
-    libparodus_shutdown(&iot_instance);
+    if (rtn != 0)
+    {
+        Error ("Libparodus failed to recieve message: '%s'\n",libparodus_strerror(rtn));
+        sleep(5);
+        return;
+    }
+
+    if (wrp_msg->msg_type == WRP_MSG_TYPE__REQ)
+    {
+        res_wrp_msg = (wrp_msg_t *)malloc(sizeof(wrp_msg_t));
+        memset(res_wrp_msg, 0, sizeof(wrp_msg_t));
+        Print("Thread %ld is processing...\n",id);
+        Info("Request message : %s\n",(char *)wrp_msg->u.req.payload);
+        processRequest((char *)wrp_msg->u.req.payload, ((char **)(&(res_wrp_msg->u.req.payload))));
+
+        Info("Response payload is %s\n",(char *)(res_wrp_msg->u.req.payload));
+        res_wrp_msg->u.req.payload_size = strlen(res_wrp_msg->u.req.payload);
+        res_wrp_msg->msg_type = wrp_msg->msg_type;
+        res_wrp_msg->u.req.source = wrp_msg->u.req.dest;
+        res_wrp_msg->u.req.dest = wrp_msg->u.req.source;
+        res_wrp_msg->u.req.transaction_uuid = wrp_msg->u.req.transaction_uuid;
+        contentType = (char *)malloc(sizeof(char)*(strlen(CONTENT_TYPE_JSON)+1));
+        strncpy(contentType,CONTENT_TYPE_JSON,strlen(CONTENT_TYPE_JSON)+1);
+        res_wrp_msg->u.req.content_type = contentType;
+
+        int sendStatus = libparodus_send(iot_instance, res_wrp_msg);
+        Print("sendStatus is %d\n",sendStatus);
+        if(sendStatus == 0)
+        {
+            Info("Sent message successfully to parodus\n");
+        }
+        else
+        {
+            Error("Failed to send message: '%s'\n",libparodus_strerror(sendStatus));
+        }
+        wrp_free_struct (res_wrp_msg);
+    }
+    free(wrp_msg);
+
     Print ("End of parodus_upstream\n");
-    return 0;
 }
 
-static void startParodusReceiveThread()
+void *processThread(void *t)
 {
-    int err = 0;
-    pthread_t threadId;
-
-    err = pthread_create(&threadId, NULL, parodus_receive_wait, NULL);
-    if (err != 0) 
+    long id = (long) t;
+    Print("Thread %ld started\n", id);
+    pthread_detach(pthread_self());
+    while(1)
     {
-        Error("Error creating thread :[%s]\n", strerror(err));
-        exit(1);
+        parodus_receive(id);
     }
-    else
+    return NULL;
+}
+
+void createWebpaWorkPool()
+{
+    long i;
+    int err = 0;
+    pthread_t threadId[MAX_WEBPA_THREADS];
+
+    for(i=0; i<MAX_WEBPA_THREADS; i++)
     {
-        Info("Parodus Receive wait thread created Successfully %d\n", (int ) threadId);
-    }    
+        err = pthread_create(&threadId[i], NULL, processThread, (void *)i);
+        if (err != 0)
+        {
+            Error("Error creating thread :[%s]\n", strerror(err));
+        }
+        else
+        {
+            Print("Thread %ld created Successfully\n",i);
+        }
+    }
 }
 
 int main()
 {
     connect_parodus();
-    startParodusReceiveThread();
-    sleep(5);
-
+    createWebpaWorkPool();
     while(1)
     {
         sleep(10);
     }
+    libparodus_shutdown(&iot_instance);
     return 0;	
 }
