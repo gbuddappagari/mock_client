@@ -19,7 +19,7 @@
 #define Info(...)       cimplog_info(LOGGING_MODULE, __VA_ARGS__)
 #define Print(...)      cimplog_debug(LOGGING_MODULE, __VA_ARGS__)
 
-#define MAX_WEBPA_THREADS 3
+#define MAX_WEBPA_THREADS 2
 
 libpd_instance_t iot_instance;
 
@@ -333,6 +333,7 @@ void parodus_receive(long id)
         memset(res_wrp_msg, 0, sizeof(wrp_msg_t));
         Print("Thread %ld is processing...\n",id);
         Info("Request message : %s\n",(char *)wrp_msg->u.req.payload);
+        Info("Transaction id is %s\n",wrp_msg->u.req.transaction_uuid);
         processRequest((char *)wrp_msg->u.req.payload, ((char **)(&(res_wrp_msg->u.req.payload))));
 
         Info("Response payload is %s\n",(char *)(res_wrp_msg->u.req.payload));
@@ -378,9 +379,9 @@ void createWebpaWorkPool()
 {
     long i;
     int err = 0;
-    pthread_t threadId[MAX_WEBPA_THREADS];
+    pthread_t threadId[MAX_WEBPA_THREADS-1];
 
-    for(i=0; i<MAX_WEBPA_THREADS; i++)
+    for(i=0; i<MAX_WEBPA_THREADS-1; i++)
     {
         err = pthread_create(&threadId[i], NULL, processThread, (void *)i);
         if (err != 0)
@@ -400,7 +401,7 @@ int main()
     createWebpaWorkPool();
     while(1)
     {
-        sleep(10);
+        parodus_receive(1);
     }
     libparodus_shutdown(&iot_instance);
     return 0;	
